@@ -149,43 +149,43 @@ ai-security-gateway/
 
 Here's the complete system, end to end, in the order things actually happen.
 
-       ## Phase 1 — Install time (runs once, when the gateway is first deployed)
-       
-       1. **Device profiling** (`device_profile.py`) — reads available RAM (and disk, CPU cores) from the host and classifies it into a tier: `constrained` (<256MB), `standard_edge` (256MB–2GB), or `edge_server` (2GB+).
-       2. **Model selection** (`selector.py`) — the orchestrator asks the registry for every available model manifest, filters out any whose `min_tier` the device doesn't meet, and picks the highest-scoring one that fits. A `constrained` device gets nothing here — it's heuristics-only by design.
-       3. **Download** (`registry.py` / `downloader.py`) — fetches that model's signed manifest and its artifact bytes.
-       4. **Verification — two independent checks, both must pass:**
-          - The manifest's Ed25519 signature is checked against the gateway's pinned public key. Fails → the registry itself is untrusted or spoofed → reject.
-          - The downloaded artifact is hashed (SHA-256) and compared against the hash *inside that now-verified manifest*. Fails → the bytes were tampered with or corrupted in transit → reject.
-       5. **Canary testing** (`canary_swap.py`) — even a genuinely signed, correctly-downloaded model isn't trusted yet. It's loaded into a staging slot and run against a small fixed set of known benign/malicious prompts. Every case must classify correctly.
-       6. **Atomic activation** — only if every canary case passes does the model become the "active" one. Any failure at steps 4 or 5 means the gateway falls back to heuristics-only (or keeps whatever was already active, if this was an update rather than a first install) — never a broken or unverified model, never downtime.
-       
-       ## Phase 2 — Every single request (runs continuously)
-       
-       1. **Rate limiting** — sliding window per `client_id`. Over the limit → `429`, stop here.
-       2. **Input DLP scan** (`dlp.py`) — scans the prompt for secrets/PII (AWS keys, JWTs, SSNs, emails...). Critical findings (credentials) block immediately, before anything reaches an LLM. Medium/low findings get redacted and the request continues.
-       3. **Heuristic injection scoring** (`prompt_injection.py`) — the (redacted) prompt is scored across 6 signal families (instruction override, role hijack, extraction attempts, delimiter escapes, encoding tricks, excessive agency). This is instant and free — no AI model involved.
-       4. **Input policy decision** (`policy/engine.py`):
-          - Score ≥ 0.75 → **BLOCK**, request never reaches the LLM.
-          - Score 0.4–0.75 → **ambiguous.** *This is the hook point for the AI classifier* — if one is active for this device, the flagged text gets a second opinion from it; its verdict feeds into the final decision alongside the heuristic score.
-          - Score < 0.4 → **ALLOW**, proceed.
-       5. Every input-side decision is written to the **audit log** (hash-chained, so tampering is detectable) before the response is even built.
-       6. **LLM call** — only for non-blocked requests. The system prompt carries a unique, random canary token that should never appear in any legitimate response.
-       7. **Output DLP scan** — the same scanner runs again on the model's completion, in case the model itself generated or repeated something sensitive.
-       8. **Output leak detection** — checks whether the canary token appears in the output. If it does, the system prompt has been exfiltrated — automatic **BLOCK**, regardless of anything else.
-       9. **Output policy decision** and a second audit log entry.
-       10. Response returned to the client — either the (possibly redacted) completion, or `null` with the block reason.
-       
-       ## Phase 3 — Periodic runtime update check (not per-request — scheduled, e.g. daily)
-       
-       1. Orchestrator re-profiles the device (specs rarely change, but this stays consistent with install time).
-       2. Asks the registry for the current catalog again — a newer model version may have been published since install.
-       3. **Only proceeds if the candidate strictly improves** on the currently active model's benchmark score for that device's tier. No improvement → no-op, nothing downloaded.
-       4. If there's a genuine improvement, it goes through the *exact same* download → verify → canary → activate pipeline as install time. A failure at any step means the previous model keeps serving traffic — this is the scenario your earlier test (`test_runtime_update_check_rejects_tampered_update_and_keeps_serving_old_model`) specifically proves.
-       
-       ## How the two phases connect
-       
-       The install-time and update flows (Phase 1 and 3) determine *which model, if any, is sitting in the "active" slot*. The per-request flow (Phase 2) is what actually *uses* that active model — but only as a tiebreaker for the ambiguous middle band the heuristic engine already isolates. The heuristic engine alone handles the clear-cut cases (obvious attacks, obviously benign text) on every single request for free; the AI model, when present, only gets invoked for the harder cases where it earns its computational cost.
+## Phase 1 — Install time (runs once, when the gateway is first deployed)
+
+1. **Device profiling** (`device_profile.py`) — reads available RAM (and disk, CPU cores) from the host and classifies it into a tier: `constrained` (<256MB), `standard_edge` (256MB–2GB), or `edge_server` (2GB+).
+2. **Model selection** (`selector.py`) — the orchestrator asks the registry for every available model manifest, filters out any whose `min_tier` the device doesn't meet, and picks the highest-scoring one that fits. A `constrained` device gets nothing here — it's heuristics-only by design.
+3. **Download** (`registry.py` / `downloader.py`) — fetches that model's signed manifest and its artifact bytes.
+4. **Verification — two independent checks, both must pass:**
+   - The manifest's Ed25519 signature is checked against the gateway's pinned public key. Fails → the registry itself is untrusted or spoofed → reject.
+   - The downloaded artifact is hashed (SHA-256) and compared against the hash *inside that now-verified manifest*. Fails → the bytes were tampered with or corrupted in transit → reject.
+5. **Canary testing** (`canary_swap.py`) — even a genuinely signed, correctly-downloaded model isn't trusted yet. It's loaded into a staging slot and run against a small fixed set of known benign/malicious prompts. Every case must classify correctly.
+6. **Atomic activation** — only if every canary case passes does the model become the "active" one. Any failure at steps 4 or 5 means the gateway falls back to heuristics-only (or keeps whatever was already active, if this was an update rather than a first install) — never a broken or unverified model, never downtime.
+
+## Phase 2 — Every single request (runs continuously)
+
+1. **Rate limiting** — sliding window per `client_id`. Over the limit → `429`, stop here.
+2. **Input DLP scan** (`dlp.py`) — scans the prompt for secrets/PII (AWS keys, JWTs, SSNs, emails...). Critical findings (credentials) block immediately, before anything reaches an LLM. Medium/low findings get redacted and the request continues.
+3. **Heuristic injection scoring** (`prompt_injection.py`) — the (redacted) prompt is scored across 6 signal families (instruction override, role hijack, extraction attempts, delimiter escapes, encoding tricks, excessive agency). This is instant and free — no AI model involved.
+4. **Input policy decision** (`policy/engine.py`):
+   - Score ≥ 0.75 → **BLOCK**, request never reaches the LLM.
+   - Score 0.4–0.75 → **ambiguous.** *This is the hook point for the AI classifier* — if one is active for this device, the flagged text gets a second opinion from it; its verdict feeds into the final decision alongside the heuristic score.
+   - Score < 0.4 → **ALLOW**, proceed.
+5. Every input-side decision is written to the **audit log** (hash-chained, so tampering is detectable) before the response is even built.
+6. **LLM call** — only for non-blocked requests. The system prompt carries a unique, random canary token that should never appear in any legitimate response.
+7. **Output DLP scan** — the same scanner runs again on the model's completion, in case the model itself generated or repeated something sensitive.
+8. **Output leak detection** — checks whether the canary token appears in the output. If it does, the system prompt has been exfiltrated — automatic **BLOCK**, regardless of anything else.
+9. **Output policy decision** and a second audit log entry.
+10. Response returned to the client — either the (possibly redacted) completion, or `null` with the block reason.
+
+## Phase 3 — Periodic runtime update check (not per-request — scheduled, e.g. daily)
+
+1. Orchestrator re-profiles the device (specs rarely change, but this stays consistent with install time).
+2. Asks the registry for the current catalog again — a newer model version may have been published since install.
+3. **Only proceeds if the candidate strictly improves** on the currently active model's benchmark score for that device's tier. No improvement → no-op, nothing downloaded.
+4. If there's a genuine improvement, it goes through the *exact same* download → verify → canary → activate pipeline as install time. A failure at any step means the previous model keeps serving traffic — this is the scenario your earlier test (`test_runtime_update_check_rejects_tampered_update_and_keeps_serving_old_model`) specifically proves.
+
+## How the two phases connect
+
+The install-time and update flows (Phase 1 and 3) determine *which model, if any, is sitting in the "active" slot*. The per-request flow (Phase 2) is what actually *uses* that active model — but only as a tiebreaker for the ambiguous middle band the heuristic engine already isolates. The heuristic engine alone handles the clear-cut cases (obvious attacks, obviously benign text) on every single request for free; the AI model, when present, only gets invoked for the harder cases where it earns its computational cost.
 
 ## Related projects
 
