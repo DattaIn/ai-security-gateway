@@ -1,0 +1,17 @@
+services:
+  ai-security-gateway:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      GATEWAY_RATE_LIMIT_REQUESTS: "60"
+      GATEWAY_RATE_LIMIT_WINDOW: "60"
+      GATEWAY_INJECTION_BLOCK: "0.75"
+      GATEWAY_INJECTION_FLAG: "0.4"
+      GATEWAY_DLP_BLOCK_CRITICAL: "true"
+      GATEWAY_AUDIT_LOG_PATH: "/app/logs/audit.jsonl"
+    volumes:
+      - gateway-logs:/app/logs
+
+volumes:
+  gateway-logs:

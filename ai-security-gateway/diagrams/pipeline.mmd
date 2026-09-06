@@ -1,0 +1,19 @@
+flowchart TD
+    A[Client Request] --> B[Rate Limiter]
+    B -->|429| Z1[Rejected]
+    B --> C[Input DLP Scan + Redact]
+    C --> D[Prompt-Injection Detection]
+    D --> E{Input Policy Decision}
+    E -->|BLOCK| Z2[Rejected, reasons returned]
+    E -->|FLAG or ALLOW| F[LLM Backend Call]
+    F --> G[Output DLP Scan + Redact]
+    G --> H[Output Leak / Canary Detection]
+    H --> I{Output Policy Decision}
+    I -->|BLOCK| Z3[Response withheld]
+    I -->|ALLOW| J[Response to Client]
+    C -.-> K[(Audit Log - hash chained)]
+    D -.-> K
+    E -.-> K
+    G -.-> K
+    H -.-> K
+    I -.-> K
